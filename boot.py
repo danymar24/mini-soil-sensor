@@ -22,6 +22,17 @@ DEFAULT_SSID = "Moisture_Config_AP"
 DEFAULT_PASSWORD = "configpass123" 
 CONFIG_FILE = "config.json"
 
+# --- DEFAULT CALIBRATION VALUES ---
+DEFAULT_DRY = 8191
+DEFAULT_WET = 4300
+# ----------------------------------
+
+# Global variables to be used by main.py
+wifi_ssid = None
+wifi_password = None
+CALIBRATION_DRY = DEFAULT_DRY
+CALIBRATION_WET = DEFAULT_WET
+
 def connect_to_wifi(ssid, password):
     """Attempts to connect to a given SSID."""
     sta_if = network.WLAN(network.STA_IF)
@@ -78,8 +89,13 @@ led_off()
 try:
     with open(CONFIG_FILE, 'r') as f:
         config = json.load(f)
-        wifi_ssid = config['ssid']
-        wifi_password = config['password']
+        wifi_ssid = config.get('ssid')
+        wifi_password = config.get('password')
+        
+        # --- LOAD CALIBRATION FROM FILE ---
+        # Use .get() with fallback to default in case old config file exists
+        CALIBRATION_DRY = config.get('dry', DEFAULT_DRY)
+        CALIBRATION_WET = config.get('wet', DEFAULT_WET)
 except:
     # No config file found or invalid JSON, use placeholder
     print("No valid config found.")

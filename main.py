@@ -3,6 +3,7 @@ import time
 import socket
 import network
 import json
+import boot
 
 # --- Global Sensor Data ---
 current_raw_reading = 0
@@ -10,8 +11,9 @@ current_moisture_percent = 0.0
 
 # --- Sensor Configuration ---
 SENSOR_PIN = 9          
-CALIBRATION_DRY = 8191  # Your highest observed Raw ADC value for DRY soil
-CALIBRATION_WET = 4300  # Your lowest observed Raw ADC value for WET soil
+# GLOBAL CALIBRATION VALUES (use the ones loaded by boot.py)
+CALIBRATION_DRY = boot.CALIBRATION_DRY
+CALIBRATION_WET = boot.CALIBRATION_WET
 READING_DELAY_MS = 5000 
 
 # --- Web Server Configuration ---
@@ -87,9 +89,15 @@ def url_decode(s):
             i += 1
     return res
 
-def save_config(ssid, password):
-    """Saves new credentials to config.json and resets."""
-    config = {'ssid': ssid, 'password': password}
+def save_config(ssid, password, dry_value, wet_value):
+    """Saves new credentials AND calibration to config.json and resets."""
+    config = {
+        'ssid': ssid, 
+        'password': password,
+        # Save calibration values
+        'dry': dry_value,
+        'wet': wet_value
+    }
     try:
         with open(CONFIG_FILE, 'w') as f:
             json.dump(config, f)
@@ -99,32 +107,88 @@ def save_config(ssid, password):
     except Exception as e:
         print(f"Failed to save config: {e}")
 
+def load_current_wifi_config():
+    """Utility to load current working Wi-Fi credentials."""
+    try:
+        with open(CONFIG_FILE, 'r') as f:
+            config = json.load(f)
+            return config.get('ssid'), config.get('password')
+    except:
+        return None, None
+    
 def handle_config_submission(request):
-    """Parses form data from the request."""
-    # Look for query parameters in a GET request (e.g., /?ssid=X&pass=Y)
+    """Parses form data from the request, now handling optional Wi-Fi fields."""
     if 'GET /?ssid=' in request:
         params = request.split(' ')[1].split('?')[1].split('&')
         
-        ssid = None
-        password = None
+        # New variable storage
+        new_ssid = None
+        new_password = None
+        dry_val = None
+        wet_val = None
         
         for param in params:
             key, value = param.split('=')
             if key == 'ssid':
-                ssid = value
+                new_ssid = value
             elif key == 'pass':
-                password = value
+                new_password = value
+            elif key == 'dry':
+                dry_val = value
+            elif key == 'wet':
+                wet_val = value
         
-        if ssid and password:
-            # Decode the URL-encoded characters before saving!
-            decoded_ssid = url_decode(ssid)
-            decoded_password = url_decode(password)
+        # --- CALIBRATION CHECK (STILL REQUIRED) ---
+        if not dry_val or not wet_val:
+            return False # Must provide calibration
             
-            save_config(decoded_ssid, decoded_password)
-            return True
+        try:
+            dry_val = int(dry_val)
+            wet_val = int(wet_val)
+        except ValueError:
+            return False 
+
+        # --- WIFI HANDLING: USE OLD VALUES IF NEW ONES ARE EMPTY ---
+        
+        # Get current working configuration from the saved file
+        current_ssid, current_password = load_current_wifi_config()
+        
+        # Determine final credentials to save
+        if new_ssid and new_ssid != 'None':
+            # Decode if a new SSID was provided
+            final_ssid = url_decode(new_ssid)
+        else:
+            # Use the existing SSID
+            final_ssid = current_ssid
+            
+        if new_password and new_password != 'None':
+            # Decode if a new password was provided
+            final_password = url_decode(new_password)
+        else:
+            # Use the existing password
+            final_password = current_password
+
+        # Final check: Must have valid credentials (either old or new)
+        if not final_ssid or not final_password:
+             # If neither old nor new is provided, we can't save/connect.
+             return False
+
+        # Update global variables immediately (optional, but good for testing)
+        global CALIBRATION_DRY, CALIBRATION_WET
+        CALIBRATION_DRY = dry_val
+        CALIBRATION_WET = wet_val
+        
+        # Save all values and reboot
+        save_config(final_ssid, final_password, dry_val, wet_val)
+        return True
     return False
 
 def create_config_page(message=""):
+    global CALIBRATION_DRY, CALIBRATION_WET
+    
+    # Load current Wi-Fi status for pre-filling the form
+    current_ssid, _ = load_current_wifi_config()
+
     """Generates the HTML for the configuration portal."""
     html = f"""<!DOCTYPE html>
 <html>
@@ -141,15 +205,24 @@ def create_config_page(message=""):
 </head>
 <body>
     <div class="container">
-        <h1>Moisture Sensor WiFi Config</h1>
-        <p>Enter your network credentials to connect the sensor.</p>
+        <h1>Moisture Sensor Config</h1>
+        <p>Leave WiFi fields blank to keep current connection.</p>
         <div class="message">{message}</div>
         <form action="/" method="get">
-            <label for="ssid">WiFi SSID:</label>
-            <input type="text" id="ssid" name="ssid" required>
+            <h2>WiFi Credentials</h2>
+            <label for="ssid">WiFi SSID (Current: {current_ssid or 'N/A'}):</label>
+            <input type="text" id="ssid" name="ssid" value="" placeholder="Leave blank to keep existing SSID">
+            
             <label for="pass">Password:</label>
-            <input type="password" id="pass" name="pass" required>
-            <input type="submit" value="Connect and Save">
+            <input type="password" id="pass" name="pass" value="" placeholder="Leave blank to keep existing password">
+            
+            <h2>Calibration Values (Raw ADC)</h2>
+            <label for="dry">Dry Reading (0% Moisture):</label>
+            <input type="text" id="dry" name="dry" value="{CALIBRATION_DRY}" required>
+            <label for="wet">Wet Reading (100% Moisture):</label>
+            <input type="text" id="wet" name="wet" value="{CALIBRATION_WET}" required>
+            
+            <input type="submit" value="Save Settings & Reboot">
         </form>
     </div>
 </body>
