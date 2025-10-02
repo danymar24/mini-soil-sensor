@@ -4,6 +4,7 @@ import socket
 import network
 import json
 import boot
+import neopixel
 
 # --- Global Sensor Data ---
 current_raw_reading = 0
@@ -21,6 +22,22 @@ WEB_PORT = 80
 RESPONSE_HEADER_OK = 'HTTP/1.0 200 OK\r\nContent-type: text/html\r\n\r\n'
 RESPONSE_HEADER_REDIRECT = 'HTTP/1.0 302 Found\r\nLocation: /\r\n\r\n'
 CONFIG_FILE = "config.json"
+
+# --- WS2812B Configuration ---
+NEOPIXEL_PIN = 10  # Use GPIO 10 for the NeoPixel data line
+NEOPIXEL_COUNT = 1 # We are using only one LED
+
+# --- Color Definitions (RGB Tuples) ---
+COLOR_DRY = (255, 0, 0)     # Red (Very Dry)
+COLOR_IDEAL = (255, 165, 0) # Orange (Ideal)
+COLOR_WET = (0, 255, 0)     # Green (Wet/Moist)
+
+# Initialize the NeoPixel object
+try:
+    np = neopixel.NeoPixel(machine.Pin(NEOPIXEL_PIN), NEOPIXEL_COUNT)
+except Exception as e:
+    print(f"NeoPixel initialization failed: {e}")
+    np = None
 
 # --- ADC Initialization ---
 try:
@@ -60,6 +77,29 @@ def read_moisture():
     # UPDATE GLOBAL VARIABLES
     current_raw_reading = raw_value
     current_moisture_percent = round(moisture_percentage, 1)
+
+    set_neopixel_color(current_moisture_percent)
+
+# --- NeoPixel Functions ---
+def set_neopixel_color(moisture_percent):
+    """Sets the NeoPixel color based on moisture percentage."""
+    if np is None:
+        return
+
+    # Use the same thresholds as the web page logic
+    if moisture_percent < 20:
+        color = COLOR_DRY # Red
+    elif moisture_percent < 50:
+        color = COLOR_IDEAL # Orange
+    else:
+        color = COLOR_WET # Green
+
+    try:
+        # Set the color of the first LED
+        np[0] = color
+        np.write()
+    except Exception as e:
+        print(f"Error writing to NeoPixel: {e}")
 
 # --- Configuration Portal Functions ---
 
