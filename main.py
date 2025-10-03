@@ -33,6 +33,7 @@ NEOPIXEL_COUNT = 1 # We are using only one LED
 COLOR_DRY = (255, 0, 0)     # Red (Very Dry)
 COLOR_IDEAL = (255, 165, 0) # Orange (Ideal)
 COLOR_WET = (0, 255, 0)     # Green (Wet/Moist)
+BRIGHTNESS_LEVEL = boot.BRIGHTNESS_LEVEL  # Global brightness level (0-255)
 
 # --- MQTT Setup ---
 # Set the Client ID to be unique using the device's MAC address
@@ -97,21 +98,28 @@ def read_moisture():
 
 # --- NeoPixel Functions ---
 def set_neopixel_color(moisture_percent):
-    """Sets the NeoPixel color based on moisture percentage."""
+    """Sets the NeoPixel color based on moisture percentage and global brightness."""
     if np is None:
         return
 
-    # Use the same thresholds as the web page logic
     if moisture_percent < 20:
-        color = COLOR_DRY # Red
+        base_color = COLOR_DRY 
     elif moisture_percent < 50:
-        color = COLOR_IDEAL # Orange
+        base_color = COLOR_IDEAL 
     else:
-        color = COLOR_WET # Green
+        base_color = COLOR_WET 
+
+    # Scale each R, G, B component by the BRIGHTNESS_LEVEL / 255.0
+    scale_factor = BRIGHTNESS_LEVEL / 255.0
+    
+    r = int(base_color[0] * scale_factor)
+    g = int(base_color[1] * scale_factor)
+    b = int(base_color[2] * scale_factor)
+    
+    scaled_color = (r, g, b)
 
     try:
-        # Set the color of the first LED
-        np[0] = color
+        np[0] = scaled_color
         np.write()
     except Exception as e:
         print(f"Error writing to NeoPixel: {e}")
@@ -144,7 +152,7 @@ def url_decode(s):
             i += 1
     return res
 
-def save_config(ssid, password, dry_value, wet_value, broker, port, user, mqtt_pass):
+def save_config(ssid, password, dry_value, wet_value, broker, port, user, mqtt_pass, brightness):
     """Saves new credentials AND calibration to config.json and resets."""
     config = {
         'ssid': ssid, 
@@ -156,7 +164,8 @@ def save_config(ssid, password, dry_value, wet_value, broker, port, user, mqtt_p
         'mqtt_broker': broker,
         'mqtt_port': port,
         'mqtt_user': user,
-        'mqtt_pass': mqtt_pass 
+        'mqtt_pass': mqtt_pass,
+        'brightness': brightness 
     }
     
     import os
@@ -192,7 +201,7 @@ def load_current_wifi_config():
     except:
         return None, None
     
-def load_current_mqtt_config():
+def load_current_config_details():
     """Utility to load current working MQTT credentials."""
     try:
         with open(CONFIG_FILE, 'r') as f:
@@ -201,11 +210,13 @@ def load_current_mqtt_config():
                 config.get('mqtt_broker', MQTT_BROKER),
                 config.get('mqtt_port', MQTT_PORT),
                 config.get('mqtt_user', MQTT_USER),
-                config.get('mqtt_pass', MQTT_PASSWORD)
+                config.get('mqtt_pass', MQTT_PASSWORD),
+                config.get('brightness', BRIGHTNESS_LEVEL) 
+
             )
     except:
         # Return global defaults if file doesn't exist or is invalid
-        return (MQTT_BROKER, MQTT_PORT, MQTT_USER, MQTT_PASSWORD)
+        return (MQTT_BROKER, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, BRIGHTNESS_LEVEL)
     
 def sub_callback(topic, msg):
     """Handles incoming MQTT messages (e.g., commands)."""
@@ -223,19 +234,19 @@ def mqtt_connect():
     """Connects to the MQTT broker."""
     global mqtt_client
     # Skip connection if configuration is incomplete
-    if not MQTT_BROKER or MQTT_BROKER == "":
+    if not boot.MQTT_BROKER or boot.MQTT_BROKER == "":
         print("MQTT Broker not configured. Skipping connection.")
         return None
         
     try:
         # Check if client needs user/pass
-        user = MQTT_USER if MQTT_USER else None
-        password = MQTT_PASSWORD if MQTT_PASSWORD else None
+        user = boot.MQTT_USER if boot.MQTT_USER else None
+        password = boot.MQTT_PASSWORD if boot.MQTT_PASSWORD else None
         
         mqtt_client = MQTTClient(
             client_id=MQTT_CLIENT_ID, 
-            server=MQTT_BROKER, 
-            port=MQTT_PORT, 
+            server=boot.MQTT_BROKER, 
+            port=boot.MQTT_PORT, 
             user=user, 
             password=password,
             keepalive=60 
@@ -243,7 +254,7 @@ def mqtt_connect():
         mqtt_client.set_callback(sub_callback) 
         mqtt_client.connect()
         mqtt_client.subscribe(TOPIC_SUB_COMMAND)
-        print(f"MQTT Connected to {MQTT_BROKER}. Subscribed to {TOPIC_SUB_COMMAND.decode()}")
+        print(f"MQTT Connected to {boot.MQTT_BROKER}. Subscribed to {TOPIC_SUB_COMMAND.decode()}")
         return mqtt_client
     except Exception as e:
         print(f"ERROR: Failed to connect to MQTT broker: {e}")
@@ -301,7 +312,8 @@ def handle_config_submission(request):
         new_ssid, new_password = None, None
         dry_val, wet_val = None, None
         broker, port, user, mqtt_pass = None, None, None, None
-        
+        brightness = None
+
         for param in params:
             # Use find to cleanly separate key and value, handling cases where the value is missing
             if '=' in param:
@@ -318,7 +330,8 @@ def handle_config_submission(request):
             elif key == 'port': port = value
             elif key == 'user': user = value
             elif key == 'mqtt_pass': mqtt_pass = value
-        
+            elif key == 'brightness': brightness = value
+
         # --- CALIBRATION CHECK (REQUIRED) ---
         if not dry_val or not wet_val: return False 
         try:
@@ -336,7 +349,7 @@ def handle_config_submission(request):
         # --- MQTT HANDLING ---
         
         # Load existing MQTT config for fallback
-        current_broker, current_port, current_user, current_mqtt_pass = load_current_mqtt_config()
+        current_broker, current_port, current_user, current_mqtt_pass, current_brightness = load_current_config_details()
 
         # Determine final MQTT values (Use new if provided, otherwise fallback)
         decoded_broker = url_decode(broker).strip() if broker else ""
@@ -351,13 +364,25 @@ def handle_config_submission(request):
             # If the submitted field was blank, use the currently loaded value
             final_broker = current_broker
 
+        # --- BRIGHTNESS HANDLING (Required, must be 0-255) ---
+        if not brightness: return False
+        try:
+            final_brightness = int(brightness)
+            if not (0 <= final_brightness <= 255):
+                print("ERROR: Brightness must be 0-255.")
+                return False
+        except ValueError:
+            print("ERROR: Brightness must be an integer.")
+            return False
+
         # Update global variables immediately (optional, but good for testing)
-        global CALIBRATION_DRY, CALIBRATION_WET
+        global CALIBRATION_DRY, CALIBRATION_WET, BRIGHTNESS_LEVEL
         CALIBRATION_DRY = dry_val
         CALIBRATION_WET = wet_val
+        BRIGHTNESS_LEVEL = final_brightness
         
         # Save all values and reboot
-        save_config(final_ssid, final_password, dry_val, wet_val, final_broker, final_port, final_user, final_mqtt_pass)
+        save_config(final_ssid, final_password, dry_val, wet_val, final_broker, final_port, final_user, final_mqtt_pass, final_brightness)
         return True
     return False
 
@@ -366,7 +391,7 @@ def create_config_page(message=""):
     
     # Load current Wi-Fi status for pre-filling the form
     current_ssid, _ = load_current_wifi_config()
-    current_broker, current_port, current_user, _ = load_current_mqtt_config() # Note: Don't display password
+    current_broker, current_port, current_user, _, current_brightness = load_current_config_details() # Note: Don't display password
 
     """Generates the HTML for the configuration portal."""
     html = f"""<!DOCTYPE html>
@@ -414,6 +439,11 @@ def create_config_page(message=""):
 
             <label for="mqtt_pass">Password (optional):</label>
             <input type="password" id="mqtt_pass" name="mqtt_pass" value="">
+
+            <h2>NeoPixel Settings</h2>
+            <label for="brightness">Brightness (0-255):</label>
+            <input type="text" id="brightness" name="brightness" value="{current_brightness}" placeholder="50" required>
+
             
             <input type="submit" value="Save Settings & Reboot">
         </form>

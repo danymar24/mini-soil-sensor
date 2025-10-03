@@ -35,6 +35,9 @@ DEFAULT_USER = ""
 DEFAULT_PASS = ""
 # ---------------------------
 
+DEFAULT_BRIGHTNESS = 50
+# ---------------------------
+
 # Global variables to be used by main.py
 wifi_ssid = None
 wifi_password = None
@@ -44,7 +47,8 @@ MQTT_BROKER = DEFAULT_BROKER
 MQTT_PORT = DEFAULT_PORT
 MQTT_USER = DEFAULT_USER
 MQTT_PASSWORD = DEFAULT_PASS
-
+BRIGHTNESS_LEVEL = DEFAULT_BRIGHTNESS
+# ---------------------------
 
 def connect_to_wifi(ssid, password):
     """Attempts to connect to a given SSID."""
@@ -112,10 +116,12 @@ try:
 
         # --- LOAD MQTT FROM FILE ---
         MQTT_BROKER = config.get('mqtt_broker', DEFAULT_BROKER)
-        print(f"Loaded MQTT Broker: {MQTT_BROKER}")
         MQTT_PORT = config.get('mqtt_port', DEFAULT_PORT)
         MQTT_USER = config.get('mqtt_user', DEFAULT_USER)
         MQTT_PASSWORD = config.get('mqtt_pass', DEFAULT_PASS)
+
+        BRIGHTNESS_LEVEL = config.get('brightness', DEFAULT_BRIGHTNESS)
+
 except:
     # No config file found or invalid JSON, use placeholder
     print("No valid config found.")
