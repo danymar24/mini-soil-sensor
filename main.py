@@ -467,7 +467,7 @@ def run_project():
                 conn.send(RESPONSE_HEADER_OK.encode())
                 conn.send(create_config_page().encode())
                 conn.close()
-            # 2. If it's not a submission, serve the config page normally
+            # 2. If it's not a submission, serve the data page normally
             else:
                 conn.send(RESPONSE_HEADER_OK.encode())
                 conn.send(create_data_page().encode())
