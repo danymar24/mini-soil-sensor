@@ -32,6 +32,13 @@ COLOR_DRY = (255, 0, 0)     # Red (Very Dry)
 COLOR_IDEAL = (255, 165, 0) # Orange (Ideal)
 COLOR_WET = (0, 255, 0)     # Green (Wet/Moist)
 
+# --- NEW GLOBAL MQTT VARIABLES ---
+MQTT_BROKER = "" # Default public broker
+MQTT_PORT = 1883
+MQTT_USER = ""
+MQTT_PASSWORD = ""
+# ---------------------------------
+
 # Initialize the NeoPixel object
 try:
     np = neopixel.NeoPixel(machine.Pin(NEOPIXEL_PIN), NEOPIXEL_COUNT)
@@ -129,23 +136,45 @@ def url_decode(s):
             i += 1
     return res
 
-def save_config(ssid, password, dry_value, wet_value):
+def save_config(ssid, password, dry_value, wet_value, broker, port, user, mqtt_pass):
+    print(broker)
     """Saves new credentials AND calibration to config.json and resets."""
     config = {
         'ssid': ssid, 
         'password': password,
         # Save calibration values
         'dry': dry_value,
-        'wet': wet_value
+        'wet': wet_value,
+        # save MQTT values
+        'mqtt_broker': broker,
+        'mqtt_port': port,
+        'mqtt_user': user,
+        'mqtt_pass': mqtt_pass 
     }
+    
+    import os
+        
     try:
+        # 1. Attempt to write the file
         with open(CONFIG_FILE, 'w') as f:
             json.dump(config, f)
-        print(f"Config saved for SSID: {ssid}. Resetting...")
-        time.sleep(1)
+            
+        # 2. Force the data to be written to flash
+        os.sync() 
+            
+        print("SUCCESS: Configuration saved to flash.")
+        # Print the contents to verify immediately on the serial console
+        print(f"Saved Config: {config}") 
+        
+        # 3. Delay for a minimal amount of time to allow final serial output
+        time.sleep_ms(50) 
+        
+        # 4. Reset the machine to apply changes
         machine.reset()
+        
     except Exception as e:
-        print(f"Failed to save config: {e}")
+        # CRITICAL: Print any exception that occurs during file I/O
+        print(f"FATAL ERROR: Failed to save config or reset: {e}")
 
 def load_current_wifi_config():
     """Utility to load current working Wi-Fi credentials."""
@@ -156,62 +185,102 @@ def load_current_wifi_config():
     except:
         return None, None
     
+def load_current_mqtt_config():
+    """Utility to load current working MQTT credentials."""
+    try:
+        with open(CONFIG_FILE, 'r') as f:
+            config = json.load(f)
+            return (
+                config.get('mqtt_broker', MQTT_BROKER),
+                config.get('mqtt_port', MQTT_PORT),
+                config.get('mqtt_user', MQTT_USER),
+                config.get('mqtt_pass', MQTT_PASSWORD)
+            )
+    except:
+        # Return global defaults if file doesn't exist or is invalid
+        return (MQTT_BROKER, MQTT_PORT, MQTT_USER, MQTT_PASSWORD)
+    
 def handle_config_submission(request):
-    """Parses form data from the request, now handling optional Wi-Fi fields."""
-    if 'GET /?ssid=' in request:
-        params = request.split(' ')[1].split('?')[1].split('&')
+    print(request)
+    """Parses form data from the request, including calibration and MQTT fields."""
+    
+    # Check for the submission signature: GET request containing parameters AND the required 'dry='
+    if 'GET /?' in request and 'dry=' in request: 
+        
+        # FIX: Ensure robust extraction of the query string regardless of path
+        try:
+            # Find the index of '?'
+            q_start = request.find('?')
+            # Find the index of the space after the path/query string
+            q_end = request.find(' ', q_start)
+            
+            # Extract the raw query string part (e.g., ssid=&pass=...)
+            query_string = request[q_start + 1: q_end] 
+            
+            params = query_string.split('&')
+        except Exception as e:
+            print(f"ERROR: Failed to extract query string: {e}")
+            return False # Fail gracefully
+            
+        # Add your parameter printing back here to confirm data is being seen
+        print(f"*** Query String Being Parsed: {query_string} ***")
         
         # New variable storage
-        new_ssid = None
-        new_password = None
-        dry_val = None
-        wet_val = None
+        new_ssid, new_password = None, None
+        dry_val, wet_val = None, None
+        broker, port, user, mqtt_pass = None, None, None, None
         
         for param in params:
-            key, value = param.split('=')
-            if key == 'ssid':
-                new_ssid = value
-            elif key == 'pass':
-                new_password = value
-            elif key == 'dry':
-                dry_val = value
-            elif key == 'wet':
-                wet_val = value
+            # Use find to cleanly separate key and value, handling cases where the value is missing
+            print(param)
+            if '=' in param:
+                key, value = param.split('=', 1)
+            else:
+                continue # Skip if it's not a key=value pair
+
+            # --- Update the assignment logic ---
+            if key == 'ssid': new_ssid = value
+            elif key == 'pass': new_password = value
+            elif key == 'dry': dry_val = value
+            elif key == 'wet': wet_val = value
+            elif key == 'broker': 
+                broker = value
+                print(f"Broker param: {broker}")
+            elif key == 'port': port = value
+            elif key == 'user': user = value
+            elif key == 'mqtt_pass': mqtt_pass = value
         
-        # --- CALIBRATION CHECK (STILL REQUIRED) ---
-        if not dry_val or not wet_val:
-            return False # Must provide calibration
-            
+        # --- CALIBRATION CHECK (REQUIRED) ---
+        if not dry_val or not wet_val: return False 
         try:
             dry_val = int(dry_val)
             wet_val = int(wet_val)
         except ValueError:
             return False 
 
-        # --- WIFI HANDLING: USE OLD VALUES IF NEW ONES ARE EMPTY ---
-        
-        # Get current working configuration from the saved file
+        # --- WIFI HANDLING (USE OLD VALUES IF NEW ONES ARE EMPTY) ---
         current_ssid, current_password = load_current_wifi_config()
-        
-        # Determine final credentials to save
-        if new_ssid and new_ssid != 'None':
-            # Decode if a new SSID was provided
-            final_ssid = url_decode(new_ssid)
-        else:
-            # Use the existing SSID
-            final_ssid = current_ssid
-            
-        if new_password and new_password != 'None':
-            # Decode if a new password was provided
-            final_password = url_decode(new_password)
-        else:
-            # Use the existing password
-            final_password = current_password
+        final_ssid = url_decode(new_ssid) if new_ssid else current_ssid
+        final_password = url_decode(new_password) if new_password else current_password
+        if not final_ssid or not final_password: return False # Must have valid Wi-Fi
 
-        # Final check: Must have valid credentials (either old or new)
-        if not final_ssid or not final_password:
-             # If neither old nor new is provided, we can't save/connect.
-             return False
+        # --- MQTT HANDLING ---
+        
+        # Load existing MQTT config for fallback
+        current_broker, current_port, current_user, current_mqtt_pass = load_current_mqtt_config()
+
+        # Determine final MQTT values (Use new if provided, otherwise fallback)
+        decoded_broker = url_decode(broker).strip() if broker else ""
+        final_port = int(port) if port else current_port
+        final_user = url_decode(user).strip() if user else current_user
+        final_mqtt_pass = url_decode(mqtt_pass).strip() if mqtt_pass else current_mqtt_pass
+        
+        if len(decoded_broker) > 0:
+            # Use the newly submitted, decoded value
+            final_broker = decoded_broker
+        else:
+            # If the submitted field was blank, use the currently loaded value
+            final_broker = current_broker
 
         # Update global variables immediately (optional, but good for testing)
         global CALIBRATION_DRY, CALIBRATION_WET
@@ -219,7 +288,7 @@ def handle_config_submission(request):
         CALIBRATION_WET = wet_val
         
         # Save all values and reboot
-        save_config(final_ssid, final_password, dry_val, wet_val)
+        save_config(final_ssid, final_password, dry_val, wet_val, final_broker, final_port, final_user, final_mqtt_pass)
         return True
     return False
 
@@ -228,6 +297,7 @@ def create_config_page(message=""):
     
     # Load current Wi-Fi status for pre-filling the form
     current_ssid, _ = load_current_wifi_config()
+    current_broker, current_port, current_user, _ = load_current_mqtt_config() # Note: Don't display password
 
     """Generates the HTML for the configuration portal."""
     html = f"""<!DOCTYPE html>
@@ -248,7 +318,7 @@ def create_config_page(message=""):
         <h1>Moisture Sensor Config</h1>
         <p>Leave WiFi fields blank to keep current connection.</p>
         <div class="message">{message}</div>
-        <form action="/" method="get">
+<form action="/" method="get">
             <h2>WiFi Credentials</h2>
             <label for="ssid">WiFi SSID (Current: {current_ssid or 'N/A'}):</label>
             <input type="text" id="ssid" name="ssid" value="" placeholder="Leave blank to keep existing SSID">
@@ -261,6 +331,19 @@ def create_config_page(message=""):
             <input type="text" id="dry" name="dry" value="{CALIBRATION_DRY}" required>
             <label for="wet">Wet Reading (100% Moisture):</label>
             <input type="text" id="wet" name="wet" value="{CALIBRATION_WET}" required>
+
+            <h2>MQTT Broker Settings</h2>
+            <label for="broker">Broker Address:</label>
+            <input type="text" id="broker" name="broker" value="{current_broker}">
+            
+            <label for="port">Port:</label>
+            <input type="text" id="port" name="port" value="{current_port}" placeholder="1883">
+
+            <label for="user">Username (optional):</label>
+            <input type="text" id="user" name="user" value="{current_user}">
+
+            <label for="mqtt_pass">Password (optional):</label>
+            <input type="password" id="mqtt_pass" name="mqtt_pass" value="">
             
             <input type="submit" value="Save Settings & Reboot">
         </form>
@@ -317,7 +400,7 @@ def create_data_page():
         <h2>Raw Data</h2>
         <div class="data">Raw Reading: <strong>{current_raw_reading}</strong></div>
         <div class="data">Dry: {CALIBRATION_DRY}, Wet: {CALIBRATION_WET}</div>
-        <p style="font-size: small; color: #777;"><a href="/config">Change WiFi</a> | Page refreshes every 15s.</p>
+        <p style="font-size: small; color: #777;"><a href="/config">Configuration</a> | Page refreshes every 15s.</p>
     </div>
 </body>
 </html>"""
@@ -363,30 +446,32 @@ def run_project():
         try:
             conn, addr = s.accept()
             request = conn.recv(1024).decode()
-                   
-            # --- Handle Configuration Mode (AP) ---
-            if is_config_mode:
+            
+            print(f"Config request from {request}")
+            # 1. Check for form submission first
+            if 'GET /?' in request and 'dry=' in request:
+                print("Processing CONFIGURATION SUBMISSION...") # <<< ADD THIS PRINT
+
+                # Submission logic
                 if handle_config_submission(request):
-                    # Submission handled (saved config and reset)
                     conn.send(RESPONSE_HEADER_OK.encode())
                     conn.send(create_config_page("Configuration Saved. Device Resetting...").encode())
+                    conn.close() 
                 else:
-                    # Serve the config page
                     conn.send(RESPONSE_HEADER_OK.encode())
-                    conn.send(create_config_page().encode())
-
-            # --- Handle Data Mode (STA) ---
+                    conn.send(create_config_page("Error: Invalid input. Check calibration values.").encode())
+                    conn.close()
+            elif "GET /config" in request or ap_if.active():
+                print("Serving Configuration Page.") # <<< ADD THIS PRINT
+                # Serve the config page normally
+                conn.send(RESPONSE_HEADER_OK.encode())
+                conn.send(create_config_page().encode())
+                conn.close()
+            # 2. If it's not a submission, serve the config page normally
             else:
-                # Allows user to manually access the config page via a link on the main page
-                if "GET /config" in request:
-                    conn.send(RESPONSE_HEADER_OK.encode())
-                    conn.send(create_config_page("Current WiFi is working. To change it, enter new credentials:").encode())
-                else:
-                    # Serve the main data page
-                    conn.send(RESPONSE_HEADER_OK.encode())
-                    conn.send(create_data_page().encode())
-            
-            conn.close()
+                conn.send(RESPONSE_HEADER_OK.encode())
+                conn.send(create_data_page().encode())
+                conn.close()
             
         # CATCH SPECIFIC OS ERRORS (like timeout or disconnects)
         except OSError as e:

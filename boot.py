@@ -27,11 +27,23 @@ DEFAULT_DRY = 8191
 DEFAULT_WET = 4300
 # ----------------------------------
 
+# --- DEFAULT MQTT VALUES ---
+DEFAULT_BROKER = ""
+DEFAULT_PORT = 1883
+DEFAULT_USER = ""
+DEFAULT_PASS = ""
+# ---------------------------
+
 # Global variables to be used by main.py
 wifi_ssid = None
 wifi_password = None
 CALIBRATION_DRY = DEFAULT_DRY
 CALIBRATION_WET = DEFAULT_WET
+MQTT_BROKER = DEFAULT_BROKER
+MQTT_PORT = DEFAULT_PORT
+MQTT_USER = DEFAULT_USER
+MQTT_PASSWORD = DEFAULT_PASS
+
 
 def connect_to_wifi(ssid, password):
     """Attempts to connect to a given SSID."""
@@ -89,13 +101,20 @@ led_off()
 try:
     with open(CONFIG_FILE, 'r') as f:
         config = json.load(f)
+        # Use .get() with fallback to default in case old config file exists
         wifi_ssid = config.get('ssid')
         wifi_password = config.get('password')
         
         # --- LOAD CALIBRATION FROM FILE ---
-        # Use .get() with fallback to default in case old config file exists
         CALIBRATION_DRY = config.get('dry', DEFAULT_DRY)
         CALIBRATION_WET = config.get('wet', DEFAULT_WET)
+
+        # --- LOAD MQTT FROM FILE ---
+        MQTT_BROKER = config.get('mqtt_broker', DEFAULT_BROKER)
+        print(f"Loaded MQTT Broker: {MQTT_BROKER}")
+        MQTT_PORT = config.get('mqtt_port', DEFAULT_PORT)
+        MQTT_USER = config.get('mqtt_user', DEFAULT_USER)
+        MQTT_PASSWORD = config.get('mqtt_pass', DEFAULT_PASS)
 except:
     # No config file found or invalid JSON, use placeholder
     print("No valid config found.")
