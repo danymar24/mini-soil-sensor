@@ -5,6 +5,8 @@ import network
 import json
 import boot
 import neopixel
+import ubinascii 
+from umqtt.simple import MQTTClient
 
 # --- Global Sensor Data ---
 current_raw_reading = 0
@@ -32,12 +34,18 @@ COLOR_DRY = (255, 0, 0)     # Red (Very Dry)
 COLOR_IDEAL = (255, 165, 0) # Orange (Ideal)
 COLOR_WET = (0, 255, 0)     # Green (Wet/Moist)
 
-# --- NEW GLOBAL MQTT VARIABLES ---
-MQTT_BROKER = "" # Default public broker
-MQTT_PORT = 1883
-MQTT_USER = ""
-MQTT_PASSWORD = ""
-# ---------------------------------
+# --- MQTT Setup ---
+# Set the Client ID to be unique using the device's MAC address
+unique_bytes = machine.unique_id()[-3:]
+unique_int = int.from_bytes(unique_bytes, 'big')
+SHORT_DEVICE_ID = "{:03d}".format(unique_int % 1000)
+MQTT_CLIENT_ID = f'esp32-{SHORT_DEVICE_ID}'
+
+# Define Topics (using the unique ID for organization)
+TOPIC_PUB = f'sensors/moisture/{MQTT_CLIENT_ID}/data'.encode('utf-8')
+TOPIC_SUB_COMMAND = f'sensors/moisture/{MQTT_CLIENT_ID}/cmd'.encode('utf-8')
+
+mqtt_client = None # Global variable for the MQTT client object
 
 # Initialize the NeoPixel object
 try:
@@ -137,7 +145,6 @@ def url_decode(s):
     return res
 
 def save_config(ssid, password, dry_value, wet_value, broker, port, user, mqtt_pass):
-    print(broker)
     """Saves new credentials AND calibration to config.json and resets."""
     config = {
         'ssid': ssid, 
@@ -200,6 +207,71 @@ def load_current_mqtt_config():
         # Return global defaults if file doesn't exist or is invalid
         return (MQTT_BROKER, MQTT_PORT, MQTT_USER, MQTT_PASSWORD)
     
+def sub_callback(topic, msg):
+    """Handles incoming MQTT messages (e.g., commands)."""
+    print(f"MQTT Received Topic: {topic.decode()}")
+    print(f"MQTT Received Message: {msg.decode()}")
+    
+    # Example: If another device sends a command to reboot this device
+    if topic == TOPIC_SUB_COMMAND and msg.decode() == "reboot":
+        print("Received reboot command. Resetting...")
+        machine.reset()
+        
+    # Add more logic here to handle incoming configuration updates if desired.
+
+def mqtt_connect():
+    """Connects to the MQTT broker."""
+    global mqtt_client
+    # Skip connection if configuration is incomplete
+    if not MQTT_BROKER or MQTT_BROKER == "":
+        print("MQTT Broker not configured. Skipping connection.")
+        return None
+        
+    try:
+        # Check if client needs user/pass
+        user = MQTT_USER if MQTT_USER else None
+        password = MQTT_PASSWORD if MQTT_PASSWORD else None
+        
+        mqtt_client = MQTTClient(
+            client_id=MQTT_CLIENT_ID, 
+            server=MQTT_BROKER, 
+            port=MQTT_PORT, 
+            user=user, 
+            password=password,
+            keepalive=60 
+        )
+        mqtt_client.set_callback(sub_callback) 
+        mqtt_client.connect()
+        mqtt_client.subscribe(TOPIC_SUB_COMMAND)
+        print(f"MQTT Connected to {MQTT_BROKER}. Subscribed to {TOPIC_SUB_COMMAND.decode()}")
+        return mqtt_client
+    except Exception as e:
+        print(f"ERROR: Failed to connect to MQTT broker: {e}")
+        return None
+
+def mqtt_publish(payload):
+    """Attempts to publish data, reconnecting/checking messages if necessary."""
+    global mqtt_client
+    print(f"Publishing MQTT data... {payload}")
+    if mqtt_client is None:
+        mqtt_client = mqtt_connect()
+        if mqtt_client is None:
+            return 
+            
+    try:
+        # Check for incoming messages before publishing (essential for subscription logic)
+        mqtt_client.check_msg() 
+        mqtt_client.publish(TOPIC_PUB, payload.encode('utf-8'), retain=False, qos=0)
+        
+    except OSError as e:
+        # Broker disconnected (commonly error code 104 or 113)
+        if e.args[0] in (104, 113): 
+            print(f"MQTT Disconnected ({e}). Reconnecting...")
+            mqtt_client = None
+            time.sleep_ms(100)
+        else:
+            print(f"MQTT Publish/Check Error: {e}")
+
 def handle_config_submission(request):
     print(request)
     """Parses form data from the request, including calibration and MQTT fields."""
@@ -232,7 +304,6 @@ def handle_config_submission(request):
         
         for param in params:
             # Use find to cleanly separate key and value, handling cases where the value is missing
-            print(param)
             if '=' in param:
                 key, value = param.split('=', 1)
             else:
@@ -243,9 +314,7 @@ def handle_config_submission(request):
             elif key == 'pass': new_password = value
             elif key == 'dry': dry_val = value
             elif key == 'wet': wet_val = value
-            elif key == 'broker': 
-                broker = value
-                print(f"Broker param: {broker}")
+            elif key == 'broker': broker = value
             elif key == 'port': port = value
             elif key == 'user': user = value
             elif key == 'mqtt_pass': mqtt_pass = value
@@ -304,6 +373,7 @@ def create_config_page(message=""):
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🪴</text></svg>" />
     <title>WiFi Config</title>
     <style>
         body {{ font-family: Arial, sans-serif; text-align: center; margin: 20px; background-color: #f4f4f4; }}
@@ -376,6 +446,7 @@ def create_data_page():
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta http-equiv="refresh" content="15">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🪴</text></svg>" />
     <title>ESP32 Moisture Monitor</title>
     <style>
         body {{ font-family: Arial, sans-serif; text-align: center; margin: 20px; background-color: #f4f4f4; }}
@@ -400,7 +471,7 @@ def create_data_page():
         <h2>Raw Data</h2>
         <div class="data">Raw Reading: <strong>{current_raw_reading}</strong></div>
         <div class="data">Dry: {CALIBRATION_DRY}, Wet: {CALIBRATION_WET}</div>
-        <p style="font-size: small; color: #777;"><a href="/config">Configuration</a> | Page refreshes every 15s.</p>
+        <p style="font-size: small; color: #777;"><a href="/config">Configuration</a> | Page refreshes every 15s. | Device ID: {SHORT_DEVICE_ID}</p>
     </div>
 </body>
 </html>"""
@@ -417,6 +488,10 @@ def run_project():
     
     is_config_mode = ap_if.active() # True if AP is running from boot.py
     
+    # --- MQTT SETUP: Attempt connection only if NOT in config mode ---
+    if not is_config_mode:
+        mqtt_connect() 
+
     # Start the server socket
     s = None # Initialize to None for safer closing
     try:
@@ -440,6 +515,23 @@ def run_project():
         if not is_config_mode and time.ticks_diff(time.ticks_ms(), last_read_time) > READING_DELAY_MS:
             read_moisture()
             print(f"Sensor Read: Raw={current_raw_reading}, Moisture={current_moisture_percent}%")
+            try:
+                read_moisture()
+                
+                # --- MQTT PUBLISH BLOCK ---
+                if mqtt_client:
+                    print("Publishing MQTT data...")
+                    payload = json.dumps({
+                        "raw": current_raw_reading,
+                        "moisture_percent": current_moisture_percent,
+                        "device_id": SHORT_DEVICE_ID,
+                        "topic": TOPIC_PUB.decode()
+                    })
+                    mqtt_publish(payload)
+                # -------------------------
+                
+            except Exception as e:
+                print(f"ERROR: Sensor reading/MQTT failed: {e}")
             last_read_time = time.ticks_ms()
             
         # Handle incoming web connections
@@ -447,10 +539,9 @@ def run_project():
             conn, addr = s.accept()
             request = conn.recv(1024).decode()
             
-            print(f"Config request from {request}")
             # 1. Check for form submission first
             if 'GET /?' in request and 'dry=' in request:
-                print("Processing CONFIGURATION SUBMISSION...") # <<< ADD THIS PRINT
+                print("Processing CONFIGURATION SUBMISSION...")
 
                 # Submission logic
                 if handle_config_submission(request):
@@ -462,7 +553,7 @@ def run_project():
                     conn.send(create_config_page("Error: Invalid input. Check calibration values.").encode())
                     conn.close()
             elif "GET /config" in request or ap_if.active():
-                print("Serving Configuration Page.") # <<< ADD THIS PRINT
+                print("Serving Configuration Page.")
                 # Serve the config page normally
                 conn.send(RESPONSE_HEADER_OK.encode())
                 conn.send(create_config_page().encode())
