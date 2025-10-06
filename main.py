@@ -6,6 +6,7 @@ import json
 import boot
 import neopixel
 import ubinascii 
+import dht
 from umqtt.simple import MQTTClient
 
 # --- Global Sensor Data ---
@@ -41,6 +42,19 @@ unique_bytes = machine.unique_id()[-3:]
 unique_int = int.from_bytes(unique_bytes, 'big')
 SHORT_DEVICE_ID = "{:03d}".format(unique_int % 1000)
 MQTT_CLIENT_ID = f'esp32-{SHORT_DEVICE_ID}'
+MQTT_BROKER = boot.MQTT_BROKER
+MQTT_PORT = boot.MQTT_PORT
+MQTT_USER = boot.MQTT_USER
+MQTT_PASSWORD = boot.MQTT_PASSWORD
+
+# --- DHT22 Configuration ---
+DHT_PIN = 14 
+DHT_ENABLED = False
+TEMP_UNIT_C = True
+current_temp_c = 0.0
+current_humidity = 0.0
+
+d = None
 
 # Define Topics (using the unique ID for organization)
 TOPIC_PUB = f'sensors/moisture/{MQTT_CLIENT_ID}/data'.encode('utf-8')
@@ -67,6 +81,22 @@ except Exception as e:
     print(f"ADC init error: {e}. Sensor reading disabled.")
     adc = None # Disable sensor reading if init fails
     
+def initialize_dht():
+    """Initializes the DHT sensor only if the flag is enabled."""
+    global d
+    if DHT_ENABLED:
+        try:
+            import dht
+            d = dht.DHT22(machine.Pin(DHT_PIN))
+            print("DHT sensor initialized and enabled.")
+        except Exception as e:
+            print(f"ERROR: DHT sensor initialization failed: {e}. Disabling DHT.")
+            d = None
+    else:
+        print("DHT sensor is disabled via configuration.")
+
+initialize_dht()
+
 # --- Sensor Functions ---
 def read_moisture():
     """Reads the raw ADC value and converts it to a moisture percentage."""
@@ -124,6 +154,28 @@ def set_neopixel_color(moisture_percent):
     except Exception as e:
         print(f"Error writing to NeoPixel: {e}")
 
+def read_dht():
+    """Reads temperature and humidity from the DHT22 sensor."""
+    global current_temp_c, current_humidity
+
+    if not DHT_ENABLED or d is None:
+        current_temp_c = 0.0 
+        current_humidity = 0.0
+        return
+        
+    try:
+        # Measure must be called before accessing temperature() or humidity()
+        d.measure() 
+        current_temp_c = round(d.temperature(), 1)
+        current_humidity = round(d.humidity(), 1)
+        print(f"DHT Read: Temp={current_temp_c}°C, Humidity={current_humidity}%")
+    except OSError as e:
+        # Common error when reading fails (e.g., timing issue)
+        print(f"ERROR: Failed to read DHT sensor: {e}")
+        # Optionally, set values to 0.0 or last known good value
+        current_temp_c = 0.0 
+        current_humidity = 0.0
+
 # --- Configuration Portal Functions ---
 
 def url_decode(s):
@@ -152,7 +204,7 @@ def url_decode(s):
             i += 1
     return res
 
-def save_config(ssid, password, dry_value, wet_value, broker, port, user, mqtt_pass, brightness):
+def save_config(ssid, password, dry_value, wet_value, broker, port, user, mqtt_pass, brightness, dht_enabled, temp_unit_c):
     """Saves new credentials AND calibration to config.json and resets."""
     config = {
         'ssid': ssid, 
@@ -165,7 +217,9 @@ def save_config(ssid, password, dry_value, wet_value, broker, port, user, mqtt_p
         'mqtt_port': port,
         'mqtt_user': user,
         'mqtt_pass': mqtt_pass,
-        'brightness': brightness 
+        'brightness': brightness,
+        'dht_enabled': dht_enabled,
+        'temp_unit_c': temp_unit_c 
     }
     
     import os
@@ -211,12 +265,14 @@ def load_current_config_details():
                 config.get('mqtt_port', MQTT_PORT),
                 config.get('mqtt_user', MQTT_USER),
                 config.get('mqtt_pass', MQTT_PASSWORD),
-                config.get('brightness', BRIGHTNESS_LEVEL) 
+                config.get('brightness', BRIGHTNESS_LEVEL),
+                config.get('dht_enabled', DHT_ENABLED),
+                config.get('temp_unit_c', TEMP_UNIT_C)
 
             )
     except:
         # Return global defaults if file doesn't exist or is invalid
-        return (MQTT_BROKER, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, BRIGHTNESS_LEVEL)
+        return (MQTT_BROKER, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, BRIGHTNESS_LEVEL, DHT_ENABLED, TEMP_UNIT_C)
     
 def sub_callback(topic, msg):
     """Handles incoming MQTT messages (e.g., commands)."""
@@ -313,6 +369,8 @@ def handle_config_submission(request):
         dry_val, wet_val = None, None
         broker, port, user, mqtt_pass = None, None, None, None
         brightness = None
+        dht_checkbox_val = None 
+        temp_unit_val = None
 
         for param in params:
             # Use find to cleanly separate key and value, handling cases where the value is missing
@@ -331,6 +389,8 @@ def handle_config_submission(request):
             elif key == 'user': user = value
             elif key == 'mqtt_pass': mqtt_pass = value
             elif key == 'brightness': brightness = value
+            elif key == 'dht_enabled': dht_checkbox_val = value
+            elif key == 'temp_unit': temp_unit_val = value
 
         # --- CALIBRATION CHECK (REQUIRED) ---
         if not dry_val or not wet_val: return False 
@@ -374,15 +434,24 @@ def handle_config_submission(request):
         except ValueError:
             print("ERROR: Brightness must be an integer.")
             return False
+        
+        # --- DHT ENABLED HANDLING ---
+        final_dht_enabled = True if dht_checkbox_val == 'true' else False
+
+        # --- TEMP UNIT HANDLING ---
+        # True if 'C' is selected, False if 'F' is selected
+        final_temp_unit_c = True if temp_unit_val == 'C' else False
 
         # Update global variables immediately (optional, but good for testing)
-        global CALIBRATION_DRY, CALIBRATION_WET, BRIGHTNESS_LEVEL
+        global CALIBRATION_DRY, CALIBRATION_WET, BRIGHTNESS_LEVEL, DHT_ENABLED, TEMP_UNIT_C
         CALIBRATION_DRY = dry_val
         CALIBRATION_WET = wet_val
         BRIGHTNESS_LEVEL = final_brightness
-        
+        DHT_ENABLED = final_dht_enabled
+        TEMP_UNIT_C = final_temp_unit_c
+
         # Save all values and reboot
-        save_config(final_ssid, final_password, dry_val, wet_val, final_broker, final_port, final_user, final_mqtt_pass, final_brightness)
+        save_config(final_ssid, final_password, dry_val, wet_val, final_broker, final_port, final_user, final_mqtt_pass, final_brightness, final_dht_enabled, final_temp_unit_c)
         return True
     return False
 
@@ -391,8 +460,12 @@ def create_config_page(message=""):
     
     # Load current Wi-Fi status for pre-filling the form
     current_ssid, _ = load_current_wifi_config()
-    current_broker, current_port, current_user, _, current_brightness = load_current_config_details() # Note: Don't display password
-
+    current_broker, current_port, current_user, _, current_brightness, current_dht_enabled, current_temp_unit_c  = load_current_config_details() 
+    
+    # Checkbox state logic
+    dht_checked = "checked" if current_dht_enabled else ""
+    c_checked = "checked" if current_temp_unit_c else ""
+    f_checked = "checked" if not current_temp_unit_c else ""
     """Generates the HTML for the configuration portal."""
     html = f"""<!DOCTYPE html>
 <html>
@@ -440,9 +513,22 @@ def create_config_page(message=""):
             <label for="mqtt_pass">Password (optional):</label>
             <input type="password" id="mqtt_pass" name="mqtt_pass" value="">
 
-            <h2>NeoPixel Settings</h2>
-            <label for="brightness">Brightness (0-255):</label>
+            <h2>Peripheral Settings</h2>
+            <label for="brightness">NeoPixel Brightness (0-255):</label>
             <input type="text" id="brightness" name="brightness" value="{current_brightness}" placeholder="50" required>
+            
+            <label for="dht_enabled" style="display:block; margin-top:15px;">
+                <input type="checkbox" id="dht_enabled" name="dht_enabled" value="true" {dht_checked}> 
+                Enable DHT22 Temperature/Humidity Sensor
+            </label>
+
+            <h3 style="margin-top:20px;">Temperature Unit</h3>
+            <label style="margin-right:20px;">
+                <input type="radio" name="temp_unit" value="C" {c_checked} required> Celsius (°C)
+            </label>
+            <label>
+                <input type="radio" name="temp_unit" value="F" {f_checked}> Fahrenheit (°F)
+            </label>
 
             
             <input type="submit" value="Save Settings & Reboot">
@@ -465,6 +551,26 @@ def create_data_page():
     else:
         status_color = "#2ecc71" # Green (Moist/Wet)
         status_text = "MOIST - No need to water."
+
+    # Helper to convert C to F
+    current_temp_f = round((current_temp_c * 9/5) + 32, 1) if current_temp_c else 0.0
+    
+    # Determine which unit to display
+    if TEMP_UNIT_C:
+        display_temp = current_temp_c
+        unit_symbol = "°C"
+    else:
+        display_temp = current_temp_f
+        unit_symbol = "°F"
+
+    # Conditional DHT HTML Section
+    dht_html = ""
+    if DHT_ENABLED:
+        dht_html = f"""
+            <h2>Environmental Data</h2>
+            <div class="data">Temperature: <strong>{display_temp}{unit_symbol}</strong></div>
+            <div class="data">Humidity: <strong>{current_humidity}%</strong></div>
+        """
         
     lt = time.localtime()
     time_string = "{:02d}:{:02d}:{:02d}".format(lt[3], lt[4], lt[5])
@@ -491,7 +597,7 @@ def create_data_page():
     <div class="container">
         <h1>Soil Moisture Sensor</h1>
         <p>Last Updated: {time_string}</p>
-
+        {dht_html}
         <h2>Moisture Level</h2>
         <div style="background-color:#eee; border-radius:4px;">
             <div class="moisture-bar" style="width: {current_moisture_percent}%; min-width: 15%; background-color: {status_color};">{current_moisture_percent}%</div>
@@ -547,16 +653,23 @@ def run_project():
             print(f"Sensor Read: Raw={current_raw_reading}, Moisture={current_moisture_percent}%")
             try:
                 read_moisture()
+                read_dht()
                 
                 # --- MQTT PUBLISH BLOCK ---
                 if mqtt_client:
                     print("Publishing MQTT data...")
-                    payload = json.dumps({
+                    payload_data = {
                         "raw": current_raw_reading,
                         "moisture_percent": current_moisture_percent,
                         "device_id": SHORT_DEVICE_ID,
-                        "topic": TOPIC_PUB.decode()
-                    })
+                        "timestamp": time.time() 
+                    }
+                    
+                    if DHT_ENABLED:
+                        payload_data["temperature_c"] = current_temp_c
+                        payload_data["humidity_percent"] = current_humidity
+                    
+                    payload = json.dumps(payload_data)
                     mqtt_publish(payload)
                 # -------------------------
                 

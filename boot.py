@@ -38,6 +38,11 @@ DEFAULT_PASS = ""
 DEFAULT_BRIGHTNESS = 50
 # ---------------------------
 
+# --- DEFAULT DHT SETTINGS ---
+DEFAULT_DHT_ENABLED = False
+DEFAULT_TEMP_UNIT_C = True
+# ----------------------------
+
 # Global variables to be used by main.py
 wifi_ssid = None
 wifi_password = None
@@ -48,6 +53,8 @@ MQTT_PORT = DEFAULT_PORT
 MQTT_USER = DEFAULT_USER
 MQTT_PASSWORD = DEFAULT_PASS
 BRIGHTNESS_LEVEL = DEFAULT_BRIGHTNESS
+DHT_ENABLED = DEFAULT_DHT_ENABLED
+TEMP_UNIT_C = DEFAULT_TEMP_UNIT_C
 # ---------------------------
 
 def connect_to_wifi(ssid, password):
@@ -121,6 +128,8 @@ try:
         MQTT_PASSWORD = config.get('mqtt_pass', DEFAULT_PASS)
 
         BRIGHTNESS_LEVEL = config.get('brightness', DEFAULT_BRIGHTNESS)
+        DHT_ENABLED = config.get('dht_enabled', DEFAULT_DHT_ENABLED)
+        TEMP_UNIT_C = config.get('temp_unit_c', DEFAULT_TEMP_UNIT_C)
 
 except:
     # No config file found or invalid JSON, use placeholder
