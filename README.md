@@ -1,18 +1,20 @@
-# 🪴 ESP32-S2 WiFi Soil Moisture Monitor
+# 🪴 ESP32-S2 WiFi Environmental Monitor
 
-A MicroPython-based project for the ESP32-S2 that reads data from a capacitive soil moisture sensor (HW-390) and serves a real-time status page over Wi-Fi. It includes a robust configuration portal, an MQTT client for remote monitoring, and a NeoPixel (WS2812B) visual status indicator.
+A MicroPython-based project for the ESP32-S2 that reads data from a **capacitive soil moisture sensor** and an **ambient DHT22 temperature/humidity sensor**. It serves a real-time status page over Wi-Fi and supports MQTT for remote monitoring.
 
 ## ✨ Features
 
-* **MQTT Integration:** Publishes sensor data (moisture %, raw ADC) to a configurable MQTT broker using a structured topic hierarchy.
-* **Unique Device ID:** Uses a concise, 3-digit device ID for easy identification on the network, topics, and web interface.
-* **Real-time Web Server:** View moisture percentage and raw ADC readings on any browser on the local network.
-* **Zero-Code Wi-Fi Setup:** Automatically enters a **Configuration Portal (Access Point)** mode if it cannot connect to the saved Wi-Fi.
-* **On-the-fly Configuration:** Update Wi-Fi, MQTT broker details, and sensor calibration values directly via the web configuration page while the device is running.
+* **DHT22 Integration (Optional):** Supports reading temperature and humidity. Can be **enabled or disabled** via the configuration portal to accommodate different hardware builds.
+* **Temperature Unit Selection:** Choose between displaying temperature in **Celsius (°C)** or **Fahrenheit (°F)** via the web configuration.
+* **MQTT Integration:** Publishes all sensor data (moisture %, raw ADC, Temp, Humidity) to a configurable MQTT broker.
+* **Unique Device ID:** Uses a concise, **3-digit device ID** for easy identification on the network, topics, and web interface.
+* **Real-time Web Server:** View all environmental data and status on any browser on the local network.
+* **On-the-fly Configuration:** Update **Wi-Fi, MQTT, calibration, brightness, and sensor options** directly via the web portal.
 * **Visual Status Indicator:** Uses a single WS2812B NeoPixel LED to display moisture status:
     * **Green:** Moist/Wet (Moisture $\ge 50\%$)
     * **Orange:** Ideal (Moisture $20\% \text{ to } 49\%$)
     * **Red:** Very Dry (Moisture $< 20\%$)
+* **Brightness Control:** Adjust the NeoPixel's intensity ($0-255$) via the configuration portal.
 
 ***
 
@@ -20,11 +22,11 @@ A MicroPython-based project for the ESP32-S2 that reads data from a capacitive s
 
 | Component | ESP32-S2 GPIO | Notes |
 | :--- | :--- | :--- |
-| **HW-390 (Aout)** | **GPIO 9** | Analog input. |
+| **Moisture Sensor (Aout)** | **GPIO 9** | Analog input. |
+| **DHT22/DHT11 (DATA)** | **GPIO 14** | Data pin for Temp/Humidity. |
 | **WS2812B (DIN)** | **GPIO 10** | Data pin for the NeoPixel LED. |
-| **Onboard LED** | **GPIO 13** | (Controlled by `boot.py` for connection status) |
 
-**⚠️ Note on Power:** The capacitive sensor and ESP32-S2 can be powered by 3.3V. However, the **WS2812B LED MUST be powered by a 5V source**, with its **GND connected to the ESP32's GND**.
+**⚠️ Note on Power:** The capacitive sensor and ESP32-S2 can be powered by 3.3V. The **WS2812B LED MUST be powered by a 5V source** (if available), with its **GND connected to the ESP32's GND**.
 
 ***
 
@@ -32,20 +34,21 @@ A MicroPython-based project for the ESP32-S2 that reads data from a capacitive s
 
 ### 1. Required Libraries
 
-This project uses standard MicroPython libraries and the following third-party library:
+This project requires two non-standard libraries:
 
 * **`umqttsimple`**: The MQTT client library.
-    * *Installation:* Upload the **`umqttsimple.py`** file to the root directory of your board.
-* **`neopixel`**: The library for controlling the WS2812B LED.
-    * *Installation:* This is often built-in. If not, install the official MicroPython **`neopixel.py`** file.
+* **`dht`**: The driver library for the DHT sensor.
+
+*Installation:* Upload both **`umqttsimple.py`** and **`dht.py`** to the root directory of your board.
 
 ### 2. Upload Files
 
-Upload the following files to the root directory of your ESP32-S2:
+Upload the following core files to the root directory of your ESP32-S2:
 
 * **`boot.py`**: Handles Wi-Fi connection and loads initial configuration.
-* **`main.py`**: Contains sensor reading, web server logic, configuration handling, MQTT client, and NeoPixel control.
-* **`umqttsimple.py`** (if required)
+* **`main.py`**: Contains all sensor reading, web server, and application logic.
+* **`umqttsimple.py`**
+* **`dht.py`**
 
 ### 3. MQTT Topic Structure
 
@@ -73,17 +76,12 @@ The device enters **Configuration Mode (Access Point)** if it cannot connect to 
 
 On the configuration page, you must set the following:
 
-1.  **WiFi Credentials:** Enter the SSID and Password for your main network. (Can be left blank later to only update other settings).
-2.  **Calibration Values:**
-    * **Dry Reading (0% Moisture):** Raw ADC value when the sensor is in **air**.
-    * **Wet Reading (100% Moisture):** Raw ADC value when the sensor is submerged in **water**.
-3.  **MQTT Broker Settings:**
-    * **Broker Address & Port:** The address and port for your Mosquitto, HiveMQ, or cloud broker.
-    * **Username/Password:** Required if your broker uses authentication.
+| Section | Field | Notes |
+| :--- | :--- | :--- |
+| **Calibration** | Dry/Wet Reading | **Required.** Raw ADC values in air/water for $0\%$ and $100\%$ moisture. |
+| **MQTT** | Broker Address/Port | Broker URL or IP address. |
+| **Peripheral** | DHT22 Sensor | **Optional Checkbox.** Enable/disable the DHT sensor. |
+| **Peripheral** | Brightness | NeoPixel intensity value ($0-255$). |
+| **Peripheral** | Temp Unit | **Radio Button.** Select Celsius (°C) or Fahrenheit (°F). |
 
-Click **"Save Settings & Reboot"**.
-
-### 3. Monitor Status
-
-* **Device IP:** After rebooting and connecting to your network, find the device's IP address and navigate to it to view the live data page.
-* **MQTT Data:** Subscribe to the topic `sensors/moisture/MQTT_CLIENT_ID/data` on your broker to see the JSON payload from the device.
+Click **"Save Settings & Reboot"**. The device will now connect to your main Wi-Fi network and begin operating.
