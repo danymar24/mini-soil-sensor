@@ -409,7 +409,7 @@ def handle_config_submission(request):
         # --- MQTT HANDLING ---
         
         # Load existing MQTT config for fallback
-        current_broker, current_port, current_user, current_mqtt_pass, current_brightness = load_current_config_details()
+        current_broker, current_port, current_user, current_mqtt_pass, current_brightness, current_dht_enabled, current_temp_unit_c = load_current_config_details() 
 
         # Determine final MQTT values (Use new if provided, otherwise fallback)
         decoded_broker = url_decode(broker).strip() if broker else ""
@@ -460,7 +460,7 @@ def create_config_page(message=""):
     
     # Load current Wi-Fi status for pre-filling the form
     current_ssid, _ = load_current_wifi_config()
-    current_broker, current_port, current_user, _, current_brightness, current_dht_enabled, current_temp_unit_c  = load_current_config_details() 
+    current_broker, current_port, current_user, mqtt_pass_placeholder, current_brightness, current_dht_enabled, current_temp_unit_c = load_current_config_details() 
     
     # Checkbox state logic
     dht_checked = "checked" if current_dht_enabled else ""
