@@ -23,6 +23,10 @@ DEFAULT_SSID = "Moisture_Config_AP"
 DEFAULT_PASSWORD = "configpass123" 
 CONFIG_FILE = "config.json"
 
+# --- DEFAULT MOISTURE SENSOR TYPE ---
+DEFAULT_MOISTURE_SENSOR_TYPE_ADC = True
+# ------------------------------------
+
 # --- DEFAULT CALIBRATION VALUES ---
 DEFAULT_DRY = 8191
 DEFAULT_WET = 4300
@@ -55,6 +59,7 @@ MQTT_PASSWORD = DEFAULT_PASS
 BRIGHTNESS_LEVEL = DEFAULT_BRIGHTNESS
 DHT_ENABLED = DEFAULT_DHT_ENABLED
 TEMP_UNIT_C = DEFAULT_TEMP_UNIT_C
+MOISTURE_SENSOR_TYPE_ADC = DEFAULT_MOISTURE_SENSOR_TYPE_ADC
 # ---------------------------
 
 def connect_to_wifi(ssid, password):
@@ -130,6 +135,7 @@ try:
         BRIGHTNESS_LEVEL = config.get('brightness', DEFAULT_BRIGHTNESS)
         DHT_ENABLED = config.get('dht_enabled', DEFAULT_DHT_ENABLED)
         TEMP_UNIT_C = config.get('temp_unit_c', DEFAULT_TEMP_UNIT_C)
+        MOISTURE_SENSOR_TYPE_ADC = config.get('sensor_type_adc', DEFAULT_MOISTURE_SENSOR_TYPE_ADC)
 
 except:
     # No config file found or invalid JSON, use placeholder

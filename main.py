@@ -14,11 +14,17 @@ current_raw_reading = 0
 current_moisture_percent = 0.0
 
 # --- Sensor Configuration ---
-SENSOR_PIN = 9          
-# GLOBAL CALIBRATION VALUES (use the ones loaded by boot.py)
+MOISTURE_SENSOR_TYPE_ADC = boot.MOISTURE_SENSOR_TYPE_ADC # True for external ADC (default), False for internal Touch
+SENSOR_PIN_ADC = 9               # External ADC Pin
+SENSOR_PIN_TOUCH = 13            # Internal Touch Pin (T5)
 CALIBRATION_DRY = boot.CALIBRATION_DRY
 CALIBRATION_WET = boot.CALIBRATION_WET
 READING_DELAY_MS = 5000 
+
+# --- Global Sensor Objects ---
+adc = None       # ADC object for external sensor
+touch_sensor = None # TouchPad object for internal sensor
+# -----------------------------------
 
 # --- Web Server Configuration ---
 WEB_PORT = 80
@@ -49,8 +55,8 @@ MQTT_PASSWORD = boot.MQTT_PASSWORD
 
 # --- DHT22 Configuration ---
 DHT_PIN = 14 
-DHT_ENABLED = False
-TEMP_UNIT_C = True
+DHT_ENABLED = boot.DHT_ENABLED
+TEMP_UNIT_C = boot.TEMP_UNIT_C
 current_temp_c = 0.0
 current_humidity = 0.0
 
@@ -69,18 +75,33 @@ except Exception as e:
     print(f"NeoPixel initialization failed: {e}")
     np = None
 
-# --- ADC Initialization ---
-try:
-    # Use 13-bit for the ESP32-S2 if 12 is rejected, based on previous errors.
-    # Note: If this line causes an error, try adc.width(14) or remove it completely
-    # and let it use the firmware's default (which seems to be 13-bit).
-    adc = machine.ADC(machine.Pin(SENSOR_PIN))
-    adc.width(13) 
-    adc.atten(machine.ADC.ATTN_11DB) 
-except Exception as e:
-    print(f"ADC init error: {e}. Sensor reading disabled.")
-    adc = None # Disable sensor reading if init fails
+# --- Moisture Sensor Initialization ---
+def initialize_moisture_sensor():
+    """Initializes either the ADC or Touch sensor based on the configuration flag."""
+    global adc, touch_sensor
     
+    if MOISTURE_SENSOR_TYPE_ADC:
+        try:
+            adc = machine.ADC(machine.Pin(SENSOR_PIN_ADC))
+            adc.width(13) 
+            adc.atten(machine.ADC.ATTN_11DB) 
+            touch_sensor = None # Ensure the other sensor is null
+            print("Moisture sensor initialized for external ADC (GPIO 9).")
+        except Exception as e:
+            print(f"ADC init error: {e}. External sensor disabled.")
+            adc = None
+            
+    else: # Use internal touch sensor
+        try:
+            touch_sensor = machine.TouchPad(machine.Pin(SENSOR_PIN_TOUCH))
+            touch_sensor.config(800) # Calibrate sensitivity (adjust if needed)
+            adc = None # Ensure the other sensor is null
+            print(f"Moisture sensor initialized for internal Touch (GPIO {SENSOR_PIN_TOUCH}).")
+        except Exception as e:
+            print(f"Touch sensor init error: {e}. Internal sensor disabled.")
+            touch_sensor = None
+    
+# --- DHT22 Initialization ---
 def initialize_dht():
     """Initializes the DHT sensor only if the flag is enabled."""
     global d
@@ -99,27 +120,59 @@ initialize_dht()
 
 # --- Sensor Functions ---
 def read_moisture():
-    """Reads the raw ADC value and converts it to a moisture percentage."""
-    global current_raw_reading, current_moisture_percent
-    if not adc:
+    """Reads the raw value from the currently active moisture sensor (ADC or Touch)."""
+    global current_raw_reading, current_moisture_percent, CALIBRATION_DRY, CALIBRATION_WET
+    
+    raw_value = 0
+    num_samples = 10
+
+    if adc:
+        # --- External ADC Read ---
+        for _ in range(num_samples):
+            raw_value += adc.read()
+            time.sleep_ms(5)
+        raw_value = raw_value // num_samples
+        
+    elif touch_sensor:
+        # --- Internal Touch Read ---
+        for _ in range(num_samples):
+            raw_value += touch_sensor.read()
+            time.sleep_ms(5)
+        raw_value = raw_value // num_samples
+        
+    else:
+        # No sensor initialized
         current_raw_reading = 0
         current_moisture_percent = 0.0
         return
         
-    num_samples = 10
-    raw_value = 0
-    for _ in range(num_samples):
-        raw_value += adc.read()
-        time.sleep_ms(5)
-        
-    raw_value = raw_value // num_samples
+    # --- Conversion Logic: Handles all Inverted/Normal Scales ---
     
-    # --- Conversion Logic ---
-    constrained_value = max(CALIBRATION_WET, min(CALIBRATION_DRY, raw_value))
-    moisture_range = CALIBRATION_DRY - CALIBRATION_WET
-    moisture_value = constrained_value - CALIBRATION_WET
-    moisture_percentage = (moisture_range - moisture_value) / moisture_range * 100
+    # 1. Determine the MIN and MAX points regardless of input order
+    # Raw Max is the highest numerical value (18200 in your case)
+    # Raw Min is the lowest numerical value (7050 in your case)
+    raw_max = max(CALIBRATION_DRY, CALIBRATION_WET)
+    raw_min = min(CALIBRATION_DRY, CALIBRATION_WET)
     
+    moisture_range = raw_max - raw_min
+    
+    # 2. Constrain the value
+    constrained_value = max(raw_min, min(raw_max, raw_value))
+    
+    # 3. Calculate distance from the DRY point (raw_min)
+    # Since your current dry point (7050) is the lowest raw number, 
+    # we measure the distance from that lowest number.
+    
+    distance_from_min = constrained_value - raw_min # 0 at dry (7050), max_range at wet (18200)
+
+    # 4. Calculate percentage
+    if moisture_range > 0:
+        # Distance from min divided by total range, multiplied by 100.0
+        # This gives 0% at min (dry) and 100% at max (wet).
+        moisture_percentage = (distance_from_min / moisture_range) * 100.0
+    else:
+        moisture_percentage = 0.0
+
     # UPDATE GLOBAL VARIABLES
     current_raw_reading = raw_value
     current_moisture_percent = round(moisture_percentage, 1)
@@ -204,7 +257,7 @@ def url_decode(s):
             i += 1
     return res
 
-def save_config(ssid, password, dry_value, wet_value, broker, port, user, mqtt_pass, brightness, dht_enabled, temp_unit_c):
+def save_config(ssid, password, dry_value, wet_value, broker, port, user, mqtt_pass, brightness, dht_enabled, temp_unit_c, sensor_type_adc):
     """Saves new credentials AND calibration to config.json and resets."""
     config = {
         'ssid': ssid, 
@@ -219,7 +272,8 @@ def save_config(ssid, password, dry_value, wet_value, broker, port, user, mqtt_p
         'mqtt_pass': mqtt_pass,
         'brightness': brightness,
         'dht_enabled': dht_enabled,
-        'temp_unit_c': temp_unit_c 
+        'temp_unit_c': temp_unit_c,
+        'sensor_type_adc': sensor_type_adc
     }
     
     import os
@@ -267,12 +321,13 @@ def load_current_config_details():
                 config.get('mqtt_pass', MQTT_PASSWORD),
                 config.get('brightness', BRIGHTNESS_LEVEL),
                 config.get('dht_enabled', DHT_ENABLED),
-                config.get('temp_unit_c', TEMP_UNIT_C)
+                config.get('temp_unit_c', TEMP_UNIT_C),
+                config.get('sensor_type_adc', MOISTURE_SENSOR_TYPE_ADC)
 
             )
     except:
         # Return global defaults if file doesn't exist or is invalid
-        return (MQTT_BROKER, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, BRIGHTNESS_LEVEL, DHT_ENABLED, TEMP_UNIT_C)
+        return (MQTT_BROKER, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, BRIGHTNESS_LEVEL, DHT_ENABLED, TEMP_UNIT_C, MOISTURE_SENSOR_TYPE_ADC)
     
 def sub_callback(topic, msg):
     """Handles incoming MQTT messages (e.g., commands)."""
@@ -371,6 +426,7 @@ def handle_config_submission(request):
         brightness = None
         dht_checkbox_val = None 
         temp_unit_val = None
+        sensor_type_val = None
 
         for param in params:
             # Use find to cleanly separate key and value, handling cases where the value is missing
@@ -391,6 +447,7 @@ def handle_config_submission(request):
             elif key == 'brightness': brightness = value
             elif key == 'dht_enabled': dht_checkbox_val = value
             elif key == 'temp_unit': temp_unit_val = value
+            elif key == 'sensor_type': sensor_type_val = value
 
         # --- CALIBRATION CHECK (REQUIRED) ---
         if not dry_val or not wet_val: return False 
@@ -409,7 +466,7 @@ def handle_config_submission(request):
         # --- MQTT HANDLING ---
         
         # Load existing MQTT config for fallback
-        current_broker, current_port, current_user, current_mqtt_pass, current_brightness, current_dht_enabled, current_temp_unit_c = load_current_config_details() 
+        current_broker, current_port, current_user, current_mqtt_pass, current_brightness, current_dht_enabled, current_temp_unit_c, current_sensor_type_adc = load_current_config_details() 
 
         # Determine final MQTT values (Use new if provided, otherwise fallback)
         decoded_broker = url_decode(broker).strip() if broker else ""
@@ -442,6 +499,10 @@ def handle_config_submission(request):
         # True if 'C' is selected, False if 'F' is selected
         final_temp_unit_c = True if temp_unit_val == 'C' else False
 
+        # --- SENSOR TYPE HANDLING ---
+        # True if 'ADC' is selected, False if 'Touch' is selected
+        final_sensor_type_adc = True if sensor_type_val == 'ADC' else False
+
         # Update global variables immediately (optional, but good for testing)
         global CALIBRATION_DRY, CALIBRATION_WET, BRIGHTNESS_LEVEL, DHT_ENABLED, TEMP_UNIT_C
         CALIBRATION_DRY = dry_val
@@ -449,9 +510,10 @@ def handle_config_submission(request):
         BRIGHTNESS_LEVEL = final_brightness
         DHT_ENABLED = final_dht_enabled
         TEMP_UNIT_C = final_temp_unit_c
+        MOISTURE_SENSOR_TYPE_ADC = final_sensor_type_adc
 
         # Save all values and reboot
-        save_config(final_ssid, final_password, dry_val, wet_val, final_broker, final_port, final_user, final_mqtt_pass, final_brightness, final_dht_enabled, final_temp_unit_c)
+        save_config(final_ssid, final_password, dry_val, wet_val, final_broker, final_port, final_user, final_mqtt_pass, final_brightness, final_dht_enabled, final_temp_unit_c, final_sensor_type_adc)
         return True
     return False
 
@@ -460,12 +522,17 @@ def create_config_page(message=""):
     
     # Load current Wi-Fi status for pre-filling the form
     current_ssid, _ = load_current_wifi_config()
-    current_broker, current_port, current_user, mqtt_pass_placeholder, current_brightness, current_dht_enabled, current_temp_unit_c = load_current_config_details() 
+    current_broker, current_port, current_user, mqtt_pass_placeholder, current_brightness, current_dht_enabled, current_temp_unit_c, current_sensor_type_adc  = load_current_config_details() 
     
     # Checkbox state logic
     dht_checked = "checked" if current_dht_enabled else ""
     c_checked = "checked" if current_temp_unit_c else ""
     f_checked = "checked" if not current_temp_unit_c else ""
+
+    # Radio button state logic
+    adc_checked = "checked" if current_sensor_type_adc else ""
+    touch_checked = "checked" if not current_sensor_type_adc else ""
+
     """Generates the HTML for the configuration portal."""
     html = f"""<!DOCTYPE html>
 <html>
@@ -512,7 +579,15 @@ def create_config_page(message=""):
 
             <label for="mqtt_pass">Password (optional):</label>
             <input type="password" id="mqtt_pass" name="mqtt_pass" value="">
-
+            
+            <h2>Moisture Sensor Type</h2>
+            <label style="margin-right:20px;">
+                <input type="radio" name="sensor_type" value="ADC" {adc_checked} required> External Capacitive (GPIO 9)
+            </label>
+            <label>
+                <input type="radio" name="sensor_type" value="Touch" {touch_checked}> Internal Capacitive (GPIO 13)
+            </label>
+            
             <h2>Peripheral Settings</h2>
             <label for="brightness">NeoPixel Brightness (0-255):</label>
             <input type="text" id="brightness" name="brightness" value="{current_brightness}" placeholder="50" required>
@@ -618,6 +693,8 @@ def create_data_page():
 
 def run_project():
     
+    initialize_moisture_sensor()
+
     # Determine the mode (STA or AP)
     sta_if = network.WLAN(network.STA_IF)
     ap_if = network.WLAN(network.AP_IF)
