@@ -146,30 +146,37 @@ def read_moisture():
         current_moisture_percent = 0.0
         return
         
-    # --- Conversion Logic: Handles all Inverted/Normal Scales ---
+# --- Conversion Logic: Universal Adaptive Scaling ---
     
-    # 1. Determine the MIN and MAX points regardless of input order
-    # Raw Max is the highest numerical value (18200 in your case)
-    # Raw Min is the lowest numerical value (7050 in your case)
+    # 1. Identify the numerical min and max of the calibration range
     raw_max = max(CALIBRATION_DRY, CALIBRATION_WET)
     raw_min = min(CALIBRATION_DRY, CALIBRATION_WET)
-    
     moisture_range = raw_max - raw_min
     
-    # 2. Constrain the value
+    # 2. Constrain the raw reading
     constrained_value = max(raw_min, min(raw_max, raw_value))
     
-    # 3. Calculate distance from the DRY point (raw_min)
-    # Since your current dry point (7050) is the lowest raw number, 
-    # we measure the distance from that lowest number.
+    # 3. Determine the 'Dry Point' for the calculation
+    # The Dry Point is the numerical value that the user entered for "Dry".
+    raw_dry_point = CALIBRATION_DRY 
     
-    distance_from_min = constrained_value - raw_min # 0 at dry (7050), max_range at wet (18200)
+    # 4. Calculate distance from the Dry Point
+    distance_from_dry = 0.0
+    
+    if raw_dry_point > raw_min:
+        # Case A: Dry is the MAX raw value (e.g., Touch Sensor)
+        # We measure how far we are from the max point: distance_from_dry = raw_max - Raw
+        distance_from_dry = raw_dry_point - constrained_value
+        
+    else: # raw_dry_point == raw_min
+        # Case B: Dry is the MIN raw value (e.g., External ADC)
+        # We measure how far we are from the min point: distance_from_dry = Raw - raw_min
+        distance_from_dry = constrained_value - raw_dry_point
 
-    # 4. Calculate percentage
+    # 5. Calculate percentage
     if moisture_range > 0:
-        # Distance from min divided by total range, multiplied by 100.0
-        # This gives 0% at min (dry) and 100% at max (wet).
-        moisture_percentage = (distance_from_min / moisture_range) * 100.0
+        # Distance from Dry (0 at Dry, Max at Wet) / Range * 100.0
+        moisture_percentage = (distance_from_dry / moisture_range) * 100.0
     else:
         moisture_percentage = 0.0
 
@@ -698,6 +705,14 @@ def run_project():
     # Determine the mode (STA or AP)
     sta_if = network.WLAN(network.STA_IF)
     ap_if = network.WLAN(network.AP_IF)
+
+    # --- GET IP ADDRESS ---
+    device_ip = "0.0.0.0"
+    if sta_if.isconnected():
+        # sta_if.ifconfig() returns ('ip', 'netmask', 'gateway', 'dns')
+        device_ip = sta_if.ifconfig()[0] 
+        print(f"Device IP: {device_ip}")
+    # ----------------------
     
     is_config_mode = ap_if.active() # True if AP is running from boot.py
     
@@ -739,6 +754,7 @@ def run_project():
                         "raw": current_raw_reading,
                         "moisture_percent": current_moisture_percent,
                         "device_id": SHORT_DEVICE_ID,
+                        "ip_address": device_ip,
                         "timestamp": time.time() 
                     }
                     
